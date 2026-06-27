@@ -1,0 +1,106 @@
+version: "3.9"
+
+# =============================================================
+# Microservicios EC2 - Docker Compose
+# Levanta PostgreSQL + user-service + order-service
+# =============================================================
+
+services:
+
+  # ---------------------------------------------------------
+  # PostgreSQL: una sola instancia con dos bases de datos
+  # (users_db para user-service, orders_db para order-service)
+  # ---------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: ec2-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_MULTIPLE_DATABASES: users_db,orders_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ec2-network
+
+  # ---------------------------------------------------------
+  # user-service (puerto 8081)
+  # ---------------------------------------------------------
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    container_name: ec2-user-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: users_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres123
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ec2-network
+
+  # ---------------------------------------------------------
+  # order-service (puerto 8082)
+  # Se comunica con user-service mediante OpenFeign
+  # ---------------------------------------------------------
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    container_name: ec2-order-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: orders_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres123
+      USER_SERVICE_URL: http://user-service:8081
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ec2-network
+
+# =============================================================
+# Volúmenes y redes
+# =============================================================
+volumes:
+  postgres_data:
+    name: ec2-postgres-data
+
+networks:
+  ec2-network:
+    name: ec2-network
+    driver: bridge
